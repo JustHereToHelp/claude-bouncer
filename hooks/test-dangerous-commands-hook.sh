@@ -1,6 +1,6 @@
 #!/bin/bash
 # Edge case tests for block-dangerous-commands hook
-HOOK=/Users/imatthewi/bin/block-dangerous-commands
+HOOK="${HOOK:-$(dirname "$0")/block-dangerous-commands}"
 
 pass=0
 fail=0
@@ -110,7 +110,7 @@ echo "=== SAFE COMMANDS (no false positives) ==="
 run_test "git status" '{"tool_name":"Bash","tool_input":{"command":"git status"}}' "pass"
 run_test "npm install" '{"tool_name":"Bash","tool_input":{"command":"npm install express"}}' "pass"
 run_test "python3 script" '{"tool_name":"Bash","tool_input":{"command":"python3 script.py"}}' "pass"
-run_test "ls -la" '{"tool_name":"Bash","tool_input":{"command":"ls -la /Users/imatthewi"}}' "pass"
+run_test "ls -la" '{"tool_name":"Bash","tool_input":{"command":"ls -la /tmp"}}' "pass"
 run_test "grep in files" '{"tool_name":"Bash","tool_input":{"command":"grep -r TODO src/"}}' "pass"
 run_test "docker ps" '{"tool_name":"Bash","tool_input":{"command":"docker ps"}}' "pass"
 run_test "brew install" '{"tool_name":"Bash","tool_input":{"command":"brew install jq"}}' "pass"

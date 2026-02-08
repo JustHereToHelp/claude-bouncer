@@ -162,6 +162,20 @@ bash ~/bin/test-dangerous-commands-hook.sh
 
 ---
 
+## Uninstall
+
+1. Remove the hooks from your `~/.claude/settings.json` (delete the PreToolUse entries that reference block-dangerous-commands and block-env-read)
+2. Remove the scripts:
+```bash
+rm ~/bin/block-dangerous-commands ~/bin/block-env-read ~/bin/claude-safe
+```
+3. Remove any CLAUDE.md rules you added from `example-claude-md-rules.md`
+4. (Optional) Remove the claude-safe alias from your `.zshrc` / `.bashrc`
+
+That's it. No config files are modified outside of `settings.json` and your shell profile.
+
+---
+
 ## Roadmap
 
 - [ ] Parser-based mode (AST analysis instead of regex for higher-confidence blocking)
