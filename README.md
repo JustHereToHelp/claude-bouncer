@@ -4,7 +4,7 @@
 
 PreToolUse hooks that check every Bash command at the door before it runs. Blocks the stuff that can ruin your day — `rm -rf`, credential reads, data exfil, privilege escalation — while letting normal dev commands through untouched.
 
-Built during a real security audit, cross-verified by multiple AI models, tested against adversarial bypass techniques, and shipped with honest documentation of what it can't catch.
+Built during a real security audit, tested against adversarial bypass techniques, and shipped with honest documentation of what it can't catch.
 
 **This is a seatbelt, not an armored car.**
 
@@ -87,7 +87,7 @@ CLAUDE.md rules that reinforce the technical controls: ask before opening files,
 
 ## Known Bypasses (Honest)
 
-We tested adversarial bypass techniques from GPT-5.2's security review. Some we caught and patched. Some we can't catch with regex. Here they are:
+We tested adversarial bypass techniques. Some we caught and patched. Some we can't catch with regex. Here they are:
 
 **Bypasses we CANNOT catch (fundamental regex limitations):**
 
@@ -189,7 +189,7 @@ That's it. No config files are modified outside of `settings.json` and your shel
 
 ## Contributing
 
-This started as one person's security audit with an AI. It's v0.1-alpha. Help make it better.
+This is v0.1-alpha. Help make it better.
 
 - **Found a bypass?** That's valuable — [open an issue](../../issues) so we can decide whether to patch or document it
 - **False positive?** Report the command that got blocked and we'll figure out how to allow it safely
@@ -200,13 +200,6 @@ This started as one person's security audit with an AI. It's v0.1-alpha. Help ma
 The goal isn't Fort Knox. It's making Claude Code meaningfully safer for power users without killing productivity.
 
 ---
-
-## Credits
-
-- Security audit and hooks by Claude (Opus 4.6) + human direction
-- Bash allowlist bypass research: [Formal](https://www.joinformal.com/blog/allowlisting-some-bash-commands-is-often-the-same-as-allowlisting-all-with-claude-code/)
-- Adversarial review and naming: GPT-5.2 and Grok-4 via [HydraMCP](https://github.com/hdresearch/HydraMCP)
-- Community best practices from [Claude Code GitHub](https://github.com/anthropics/claude-code/issues)
 
 ## License
 
