@@ -1,0 +1,198 @@
+#!/bin/bash
+# PreToolUse hook: blocks access to sensitive system directories
+# Exit 0 = allow, Exit 2 = block with message on stderr
+#
+# Protects: Browser credential stores, SSH/GPG keys, personal comms,
+# dev auth tokens, system auth files
+# Covers: Bash commands, Read tool, Edit tool, Write tool, Glob tool
+#
+# NOTE: Some Bash-level credential blocks overlap with block-dangerous-commands.
+# This hook adds Read/Edit/Write/Glob tool protection (the gap) and
+# covers directories that block-dangerous-commands doesn't.
+
+INPUT=$(cat)
+TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
+
+# === BASH COMMAND BLOCKS ===
+if [ "$TOOL" = "Bash" ]; then
+  CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+
+  # --- BROWSER CREDENTIAL STORES ---
+  # Chrome, Brave, Edge, Opera, Vivaldi (all Chromium-based, same paths)
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp|mv|tar|zip|rsync|strings|xxd|hexdump|sqlite3).*(Chrome|BraveSoftware|Microsoft.Edge|Opera|Vivaldi)'; then
+    echo "BLOCKED: browser credential/cookie database access" >&2
+    exit 2
+  fi
+
+  # Firefox profiles (contain key4.db, logins.json, cookies.sqlite)
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3).*Firefox/Profiles'; then
+    echo "BLOCKED: Firefox profile data access (contains credentials)" >&2
+    exit 2
+  fi
+
+  # Safari data
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3).*Library/Safari'; then
+    echo "BLOCKED: Safari data access" >&2
+    exit 2
+  fi
+
+  # System cookies
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3).*Library/Cookies'; then
+    echo "BLOCKED: system cookie store access" >&2
+    exit 2
+  fi
+
+  # --- GPG KEYS ---
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp|mv|tar|strings).*\.gnupg'; then
+    echo "BLOCKED: GPG keyring access" >&2
+    exit 2
+  fi
+
+  # --- PERSONAL COMMUNICATIONS ---
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3|tar|zip).*Library/Messages'; then
+    echo "BLOCKED: iMessage/SMS history access" >&2
+    exit 2
+  fi
+
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3|tar|zip).*Library/Mail'; then
+    echo "BLOCKED: Apple Mail data access" >&2
+    exit 2
+  fi
+
+  # --- DEV AUTH TOKENS ---
+  # GitHub CLI (hosts.yml contains OAuth tokens)
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp).*\.config/gh/hosts'; then
+    echo "BLOCKED: GitHub CLI token access (hosts.yml)" >&2
+    exit 2
+  fi
+
+  # Docker credentials
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp).*\.docker/config\.json'; then
+    echo "BLOCKED: Docker credential access" >&2
+    exit 2
+  fi
+
+  # Kubernetes config (cluster creds, certs)
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp).*\.kube/config'; then
+    echo "BLOCKED: Kubernetes credential access" >&2
+    exit 2
+  fi
+
+  # npm auth token
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp).*\.npmrc'; then
+    echo "BLOCKED: npm auth token access" >&2
+    exit 2
+  fi
+
+  # --- SYSTEM AUTH ---
+  if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|vi|nano|sed).*(/etc/sudoers|/etc/pam\.d/)'; then
+    echo "BLOCKED: system auth config access" >&2
+    exit 2
+  fi
+
+  exit 0
+fi
+
+# === READ / EDIT / WRITE TOOL BLOCKS ===
+if [ "$TOOL" = "Read" ] || [ "$TOOL" = "Edit" ] || [ "$TOOL" = "Write" ]; then
+  FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+
+  # --- SSH KEYS (Read tool gap — Bash already blocked by block-dangerous-commands) ---
+  if echo "$FILE_PATH" | grep -qiE '\.ssh/(id_|authorized_keys|known_hosts|config)'; then
+    echo "BLOCKED: cannot access SSH keys/config — $FILE_PATH" >&2
+    exit 2
+  fi
+
+  # --- GPG KEYS ---
+  if echo "$FILE_PATH" | grep -qiE '\.gnupg/'; then
+    echo "BLOCKED: cannot access GPG keyring — $FILE_PATH" >&2
+    exit 2
+  fi
+
+  # --- BROWSER CREDENTIAL STORES ---
+  if echo "$FILE_PATH" | grep -qiE '(Google/Chrome|BraveSoftware|Microsoft Edge|Opera|Vivaldi).*(Login Data|Cookies|Web Data)'; then
+    echo "BLOCKED: cannot access browser credential store — $FILE_PATH" >&2
+    exit 2
+  fi
+  if echo "$FILE_PATH" | grep -qiE 'Firefox/Profiles.*(key[0-9]\.db|logins\.json|cookies\.sqlite|cert[0-9]\.db)'; then
+    echo "BLOCKED: cannot access Firefox credentials — $FILE_PATH" >&2
+    exit 2
+  fi
+  if echo "$FILE_PATH" | grep -qiE 'Library/Safari'; then
+    echo "BLOCKED: cannot access Safari data — $FILE_PATH" >&2
+    exit 2
+  fi
+  if echo "$FILE_PATH" | grep -qiE 'Library/Cookies'; then
+    echo "BLOCKED: cannot access system cookies — $FILE_PATH" >&2
+    exit 2
+  fi
+
+  # --- PERSONAL COMMUNICATIONS ---
+  if echo "$FILE_PATH" | grep -qiE 'Library/Messages'; then
+    echo "BLOCKED: cannot access iMessage/SMS data — $FILE_PATH" >&2
+    exit 2
+  fi
+  if echo "$FILE_PATH" | grep -qiE 'Library/Mail'; then
+    echo "BLOCKED: cannot access Apple Mail data — $FILE_PATH" >&2
+    exit 2
+  fi
+
+  # --- DEV AUTH TOKENS ---
+  if echo "$FILE_PATH" | grep -qiE '\.config/gh/hosts'; then
+    echo "BLOCKED: cannot access GitHub CLI tokens — $FILE_PATH" >&2
+    exit 2
+  fi
+  if echo "$FILE_PATH" | grep -qiE '\.docker/config\.json'; then
+    echo "BLOCKED: cannot access Docker credentials — $FILE_PATH" >&2
+    exit 2
+  fi
+  if echo "$FILE_PATH" | grep -qiE '\.kube/config'; then
+    echo "BLOCKED: cannot access Kubernetes credentials — $FILE_PATH" >&2
+    exit 2
+  fi
+  if echo "$FILE_PATH" | grep -qiE '(^|/)\.npmrc$'; then
+    echo "BLOCKED: cannot access npm auth tokens — $FILE_PATH" >&2
+    exit 2
+  fi
+
+  # --- SYSTEM AUTH ---
+  if echo "$FILE_PATH" | grep -qiE '^/etc/(sudoers|pam\.d/)'; then
+    echo "BLOCKED: cannot access system auth config — $FILE_PATH" >&2
+    exit 2
+  fi
+
+  exit 0
+fi
+
+# === GLOB TOOL BLOCKS ===
+if [ "$TOOL" = "Glob" ]; then
+  PATTERN=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty')
+  GLOB_PATH=$(echo "$INPUT" | jq -r '.tool_input.path // empty')
+  COMBINED="$PATTERN$GLOB_PATH"
+
+  if echo "$COMBINED" | grep -qiE '\.ssh'; then
+    echo "BLOCKED: cannot scan SSH directory" >&2
+    exit 2
+  fi
+  if echo "$COMBINED" | grep -qiE '\.gnupg'; then
+    echo "BLOCKED: cannot scan GPG directory" >&2
+    exit 2
+  fi
+  if echo "$COMBINED" | grep -qiE '(Chrome|BraveSoftware|Microsoft.Edge|Firefox/Profiles|Library/Safari|Library/Cookies)'; then
+    echo "BLOCKED: cannot scan browser data directories" >&2
+    exit 2
+  fi
+  if echo "$COMBINED" | grep -qiE 'Library/(Messages|Mail)'; then
+    echo "BLOCKED: cannot scan personal communications" >&2
+    exit 2
+  fi
+  if echo "$COMBINED" | grep -qiE '\.config/gh|\.docker|\.kube'; then
+    echo "BLOCKED: cannot scan dev auth directories" >&2
+    exit 2
+  fi
+
+  exit 0
+fi
+
+# All other tools: allow
+exit 0
