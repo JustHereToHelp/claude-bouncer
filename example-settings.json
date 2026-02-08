@@ -1,0 +1,82 @@
+{
+  "permissions": {
+    "acceptEdits": true,
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git show*)",
+      "Bash(git remote -v)",
+      "Bash(git remote show*)",
+      "Bash(npm install*)",
+      "Bash(npm run*)",
+      "Bash(npm test*)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(python3 *)",
+      "Bash(pip install*)",
+      "Bash(pip3 install*)",
+      "Bash(brew install*)",
+      "Bash(brew list*)",
+      "Bash(docker ps*)",
+      "Bash(docker build*)",
+      "Bash(docker compose*)",
+      "Bash(ls*)",
+      "Bash(cat *)",
+      "Bash(wc *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(find *)",
+      "Bash(which *)",
+      "Bash(echo *)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(touch *)",
+      "Bash(chmod *)",
+      "Bash(pwd)",
+      "Bash(date*)",
+      "Bash(env)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(jq *)",
+      "Bash(curl https://*)",
+      "Bash(wget https://*)"
+    ],
+    "deny": []
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/your/hooks/block-dangerous-commands"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/your/hooks/block-env-read"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/your/hooks/block-env-read"
+          }
+        ]
+      }
+    ]
+  }
+}

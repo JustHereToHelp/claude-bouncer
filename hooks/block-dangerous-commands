@@ -1,0 +1,163 @@
+#!/bin/bash
+# PreToolUse hook: blocks truly dangerous command patterns
+# Exit 0 = allow, Exit 2 = block with message on stderr
+#
+# Catches: destructive ops, write+execute combos, data exfil,
+# privilege escalation, and credential access
+
+INPUT=$(cat)
+TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
+
+# Only check Bash commands
+if [ "$TOOL" != "Bash" ]; then
+  exit 0
+fi
+
+CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+
+# --- DESTRUCTIVE OPERATIONS ---
+if echo "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--force|-[a-zA-Z]*f[a-zA-Z]*r)'; then
+  echo "BLOCKED: rm -rf / force-recursive delete detected" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'xargs\s+rm\s'; then
+  echo "BLOCKED: piped rm via xargs" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE '>\s*/dev/sd|mkfs\.|dd\s+if=.*of=/dev'; then
+  echo "BLOCKED: disk-level destructive operation" >&2
+  exit 2
+fi
+
+# --- PRIVILEGE ESCALATION ---
+if echo "$CMD" | grep -qE 'sudo\s'; then
+  echo "BLOCKED: sudo — privilege escalation not allowed" >&2
+  exit 2
+fi
+
+# --- EXOTIC BYPASS PATTERNS ---
+if echo "$CMD" | grep -qE 'base64.*\|\s*(ba)?sh|base64.*\|\s*source'; then
+  echo "BLOCKED: base64 decoded and piped to shell — evasion technique" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE '(^|\s|&&|\||;)\s*(ba)?sh\s+-c\s'; then
+  echo "BLOCKED: bash -c / sh -c — use a script file instead" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'python3?\s+-c\s.*\b(os\.system|subprocess|shutil\.rmtree|exec|eval)\b'; then
+  echo "BLOCKED: python -c with dangerous imports" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'find\s.*-exec\s'; then
+  echo "BLOCKED: find -exec — can execute arbitrary commands" >&2
+  exit 2
+fi
+
+# --- GIT REMOTE / PUSH CONTROLS ---
+if echo "$CMD" | grep -qE 'git\s+remote\s+(add|set-url|rename|remove)\s'; then
+  echo "BLOCKED: modifying git remotes — potential data exfil vector" >&2
+  exit 2
+fi
+
+# --- WRITE + EXECUTE COMBOS ---
+if echo "$CMD" | grep -qE '(chmod\s+\+x|chmod\s+[0-7]*[1357][0-7]*).*&&.*(\.\/|bash|sh|python|node|ruby|perl)'; then
+  echo "BLOCKED: write+execute combo (chmod then run)" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'curl.*\|\s*(ba)?sh|wget.*\|\s*(ba)?sh'; then
+  echo "BLOCKED: curl/wget pipe to shell — remote code execution" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'curl.*-o.*&&.*(chmod|bash|sh|\./)'; then
+  echo "BLOCKED: download and execute pattern" >&2
+  exit 2
+fi
+
+# --- DATA EXFILTRATION ---
+if echo "$CMD" | grep -qE 'curl.*(-d|--data|--data-binary|-F|--form)\s'; then
+  echo "BLOCKED: curl POST/upload — potential data exfiltration" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'curl.*\.(env|pem|key|crt|p12|pfx|ssh)'; then
+  echo "BLOCKED: curl targeting sensitive file types" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'nc\s+-|ncat\s|netcat\s'; then
+  echo "BLOCKED: netcat — potential data exfiltration" >&2
+  exit 2
+fi
+
+# --- CREDENTIAL / KEY ACCESS ---
+if echo "$CMD" | grep -qE '(source|\.)\s+.*\.env'; then
+  echo "BLOCKED: sourcing .env file — credential exposure" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE '(cat|head|tail|less|more|bat).*\.(env|pem|key|p12|pfx)'; then
+  echo "BLOCKED: reading sensitive credential files via Bash" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE '(cat|head|tail|less|more|bat).*(\.ssh/|id_rsa|id_ed25519|authorized_keys)'; then
+  echo "BLOCKED: reading SSH keys/config" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE '(cat|head|tail|less|more|bat).*(\.aws/credentials|\.netrc|\.npmrc.*auth)'; then
+  echo "BLOCKED: reading cloud/service credentials" >&2
+  exit 2
+fi
+
+# --- macOS SPECIFIC: open command ---
+# NOTE: 'open' is NOT in the Bash auto-allow list, so it always prompts.
+# The CLAUDE.md rule also requires asking the user first.
+# Double protection = safe enough without a hard block.
+
+# --- SYSTEM MODIFICATION ---
+if echo "$CMD" | grep -qE 'launchctl\s+(load|submit|bootstrap)'; then
+  echo "BLOCKED: installing launch daemon/agent" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'crontab\s+-[er]'; then
+  echo "BLOCKED: modifying crontab" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'defaults\s+write'; then
+  echo "BLOCKED: modifying macOS system defaults" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'osascript'; then
+  echo "BLOCKED: osascript — AppleScript can execute arbitrary commands" >&2
+  exit 2
+fi
+
+# --- GIT DESTRUCTIVE ---
+if echo "$CMD" | grep -qE 'git\s+push\s+.*--force|git\s+push\s+-f\s'; then
+  echo "BLOCKED: git force push" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'git\s+reset\s+--hard'; then
+  echo "BLOCKED: git reset --hard — destructive" >&2
+  exit 2
+fi
+
+if echo "$CMD" | grep -qE 'git\s+clean\s+-[a-zA-Z]*f'; then
+  echo "BLOCKED: git clean -f — removes untracked files permanently" >&2
+  exit 2
+fi
+
+# All clear
+exit 0

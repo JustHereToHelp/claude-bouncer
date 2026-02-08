@@ -1,0 +1,27 @@
+#!/bin/bash
+# PreToolUse hook: blocks reading .env files
+# Exit 2 = block the tool use with message on stderr
+
+INPUT=$(cat)
+TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
+FILE_PATH=""
+
+if [ "$TOOL" = "Read" ]; then
+  FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+elif [ "$TOOL" = "Bash" ]; then
+  CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+  if echo "$CMD" | grep -qE '(cat|head|tail|less|more|bat|sed|awk).*\.env'; then
+    echo "BLOCKED: Bash command appears to read a .env file" >&2
+    exit 2
+  fi
+fi
+
+if [ -n "$FILE_PATH" ]; then
+  BASENAME=$(basename "$FILE_PATH")
+  if echo "$BASENAME" | grep -qE '^\.env'; then
+    echo "BLOCKED: Cannot read $BASENAME — .env files are protected" >&2
+    exit 2
+  fi
+fi
+
+exit 0

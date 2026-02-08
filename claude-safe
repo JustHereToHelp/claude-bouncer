@@ -1,0 +1,33 @@
+#!/bin/bash
+# Wrapper to launch Claude Code with sensitive env vars scrubbed.
+# Usage: claude-safe [any claude args]
+#
+# Prevents accidental leakage of tokens/keys via environment variables.
+# Your git/npm/aws still work through their configured credential helpers.
+
+# --- Scrub cloud provider tokens ---
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_REGION
+unset GOOGLE_APPLICATION_CREDENTIALS GOOGLE_API_KEY GCLOUD_PROJECT
+unset AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID
+
+# --- Scrub dev tool tokens ---
+unset GITHUB_TOKEN GH_TOKEN GITLAB_TOKEN BITBUCKET_TOKEN
+unset NPM_TOKEN NPM_CONFIG_TOKEN
+unset PYPI_TOKEN TWINE_USERNAME TWINE_PASSWORD
+unset DOCKER_USERNAME DOCKER_PASSWORD DOCKER_CONFIG
+unset HOMEBREW_GITHUB_API_TOKEN
+
+# --- Scrub API keys ---
+unset OPENAI_API_KEY ANTHROPIC_API_KEY STRIPE_SECRET_KEY STRIPE_API_KEY
+unset SENDGRID_API_KEY TWILIO_AUTH_TOKEN SLACK_TOKEN SLACK_BOT_TOKEN
+unset TELEGRAM_BOT_TOKEN TELEGRAM_API_KEY
+unset DATABASE_URL REDIS_URL MONGODB_URI
+
+# --- Scrub SSH agent (prevents remote key use) ---
+unset SSH_AUTH_SOCK SSH_AGENT_PID
+
+# --- Prevent git from using stored credentials silently ---
+export GIT_TERMINAL_PROMPT=1
+
+# --- Launch Claude Code ---
+exec claude "$@"
