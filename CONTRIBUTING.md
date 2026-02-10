@@ -4,9 +4,15 @@ Thanks for wanting to help make Claude Code safer. This project is early (v0.1-a
 
 ## Adding a New Blocking Rule
 
-1. Open `hooks/block-dangerous-commands` and add your regex pattern to the appropriate section.
-2. Add test cases to `hooks/test-dangerous-commands-hook.sh` — at minimum one case that should be blocked and one that should be allowed.
+1. Open the relevant hook in `hooks/` and add your regex pattern to the appropriate section.
+2. Add test cases to the matching test file — at minimum one case that should be blocked and one that should be allowed.
 3. Every new pattern needs a test case. No exceptions.
+
+The hooks and their test files:
+- `block-dangerous-commands` / `test-dangerous-commands-hook.sh`
+- `block-env-read` (no dedicated test file yet)
+- `block-sensitive-dirs` / `test-sensitive-dirs-hook.sh`
+- `block-password-managers` / `test-password-managers-hook.sh`
 
 The hook logic is simple: `exit 0` means allow, `exit 2` means block. If you're not sure where your pattern fits, look at the existing groups in the hook and follow the same structure.
 
@@ -14,9 +20,11 @@ The hook logic is simple: `exit 0` means allow, `exit 2` means block. If you're 
 
 ```bash
 bash hooks/test-dangerous-commands-hook.sh
+bash hooks/test-sensitive-dirs-hook.sh
+bash hooks/test-password-managers-hook.sh
 ```
 
-All 55+ test cases should pass. If you added new patterns, run this before opening a PR.
+All 150+ test cases should pass. If you added new patterns, run the relevant suite before opening a PR.
 
 ## Reporting False Positives
 
