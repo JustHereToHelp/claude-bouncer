@@ -1,26 +1,84 @@
 #!/bin/bash
 # PreToolUse hook: blocks reading .env files
-# Exit 2 = block the tool use with message on stderr
+# Exit 0 = allow, Exit 2 = block with message on stderr
+# Shows macOS dialog for override. Logs all decisions.
 
 INPUT=$(cat)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
 FILE_PATH=""
+
+# --- LOGGING ---
+LOG_DIR="$HOME/.claude_bouncer"
+LOG_FILE="$LOG_DIR/audit.log"
+LOCK_FILE="$LOG_DIR/dialog.lock"
+mkdir -p "$LOG_DIR"
+
+log_event() {
+  local decision="$1" reason="$2" detail="$3"
+  local ts
+  ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
+  printf '[%s] %s tool=%s reason="%s" detail="%s"\n' \
+    "$ts" "$decision" "$TOOL" "$reason" "${detail:0:500}" >> "$LOG_FILE"
+}
+
+# --- SANITIZE for AppleScript ---
+sanitize() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/}"
+  echo "$s"
+}
+
+# --- PROMPT FUNCTION ---
+prompt_override() {
+  local reason="$1" detail="$2"
+  local reason_safe detail_safe
+  reason_safe=$(sanitize "$reason")
+  detail_safe=$(sanitize "${detail:0:300}")
+
+  if ! mkdir "$LOCK_FILE" 2>/dev/null; then
+    log_event "BLOCKED_LOCKED" "$reason" "$detail"
+    echo "BLOCKED (dialog locked): $reason" >&2
+    return 2
+  fi
+  trap 'rmdir "$LOCK_FILE" 2>/dev/null' EXIT
+
+  local result
+  result=$(osascript -e "
+    set theChoice to button returned of (display dialog \"⚠️ Claude Bouncer\" & return & return & \"Blocked: ${reason_safe}\" & return & return & \"Detail:\" & return & \"${detail_safe}\" buttons {\"Block\", \"Allow\"} default button \"Block\" with title \"Claude Bouncer\" with icon caution giving up after 120)
+    return theChoice
+  " 2>/dev/null)
+
+  rmdir "$LOCK_FILE" 2>/dev/null
+  trap - EXIT
+
+  if [ "$result" = "Allow" ]; then
+    log_event "ALLOWED" "$reason" "$detail"
+    return 0
+  else
+    log_event "BLOCKED" "$reason" "$detail"
+    echo "BLOCKED (user denied): $reason" >&2
+    return 2
+  fi
+}
 
 if [ "$TOOL" = "Read" ]; then
   FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 elif [ "$TOOL" = "Bash" ]; then
   CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
   if echo "$CMD" | grep -qE '(cat|head|tail|less|more|bat|sed|awk).*\.env'; then
-    echo "BLOCKED: Bash command appears to read a .env file" >&2
-    exit 2
+    prompt_override "Bash command reading .env file" "${CMD:0:200}"
+    exit $?
   fi
 fi
 
 if [ -n "$FILE_PATH" ]; then
   BASENAME=$(basename "$FILE_PATH")
   if echo "$BASENAME" | grep -qE '^\.env'; then
-    echo "BLOCKED: Cannot read $BASENAME — .env files are protected" >&2
-    exit 2
+    prompt_override "Reading .env file" "$FILE_PATH"
+    exit $?
   fi
 fi
 

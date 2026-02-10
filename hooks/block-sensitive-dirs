@@ -1,93 +1,139 @@
 #!/bin/bash
 # PreToolUse hook: blocks access to sensitive system directories
 # Exit 0 = allow, Exit 2 = block with message on stderr
+# Shows macOS dialog for override. Logs all decisions.
 #
 # Protects: Browser credential stores, SSH/GPG keys, personal comms,
 # dev auth tokens, system auth files
 # Covers: Bash commands, Read tool, Edit tool, Write tool, Glob tool
-#
-# NOTE: Some Bash-level credential blocks overlap with block-dangerous-commands.
-# This hook adds Read/Edit/Write/Glob tool protection (the gap) and
-# covers directories that block-dangerous-commands doesn't.
 
 INPUT=$(cat)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
+
+# --- LOGGING ---
+LOG_DIR="$HOME/.claude_bouncer"
+LOG_FILE="$LOG_DIR/audit.log"
+LOCK_FILE="$LOG_DIR/dialog.lock"
+mkdir -p "$LOG_DIR"
+
+log_event() {
+  local decision="$1" reason="$2" detail="$3"
+  local ts
+  ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
+  printf '[%s] %s tool=%s reason="%s" detail="%s"\n' \
+    "$ts" "$decision" "$TOOL" "$reason" "${detail:0:500}" >> "$LOG_FILE"
+}
+
+# --- SANITIZE for AppleScript ---
+sanitize() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/}"
+  echo "$s"
+}
+
+# --- PROMPT FUNCTION ---
+prompt_override() {
+  local reason="$1" detail="$2"
+  local reason_safe detail_safe
+  reason_safe=$(sanitize "$reason")
+  detail_safe=$(sanitize "${detail:0:300}")
+
+  if ! mkdir "$LOCK_FILE" 2>/dev/null; then
+    log_event "BLOCKED_LOCKED" "$reason" "$detail"
+    echo "BLOCKED (dialog locked): $reason" >&2
+    return 2
+  fi
+  trap 'rmdir "$LOCK_FILE" 2>/dev/null' EXIT
+
+  local result
+  result=$(osascript -e "
+    set theChoice to button returned of (display dialog \"⚠️ Claude Bouncer\" & return & return & \"Blocked: ${reason_safe}\" & return & return & \"Detail:\" & return & \"${detail_safe}\" buttons {\"Block\", \"Allow\"} default button \"Block\" with title \"Claude Bouncer\" with icon caution giving up after 120)
+    return theChoice
+  " 2>/dev/null)
+
+  rmdir "$LOCK_FILE" 2>/dev/null
+  trap - EXIT
+
+  if [ "$result" = "Allow" ]; then
+    log_event "ALLOWED" "$reason" "$detail"
+    return 0
+  else
+    log_event "BLOCKED" "$reason" "$detail"
+    echo "BLOCKED (user denied): $reason" >&2
+    return 2
+  fi
+}
 
 # === BASH COMMAND BLOCKS ===
 if [ "$TOOL" = "Bash" ]; then
   CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
   # --- BROWSER CREDENTIAL STORES ---
-  # Chrome, Brave, Edge, Opera, Vivaldi (all Chromium-based, same paths)
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp|mv|tar|zip|rsync|strings|xxd|hexdump|sqlite3).*(Chrome|BraveSoftware|Microsoft.Edge|Opera|Vivaldi)'; then
-    echo "BLOCKED: browser credential/cookie database access" >&2
-    exit 2
+    prompt_override "browser credential/cookie database access" "${CMD:0:200}"
+    exit $?
   fi
 
-  # Firefox profiles (contain key4.db, logins.json, cookies.sqlite)
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3).*Firefox/Profiles'; then
-    echo "BLOCKED: Firefox profile data access (contains credentials)" >&2
-    exit 2
+    prompt_override "Firefox profile data access" "${CMD:0:200}"
+    exit $?
   fi
 
-  # Safari data
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3).*Library/Safari'; then
-    echo "BLOCKED: Safari data access" >&2
-    exit 2
+    prompt_override "Safari data access" "${CMD:0:200}"
+    exit $?
   fi
 
-  # System cookies
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3).*Library/Cookies'; then
-    echo "BLOCKED: system cookie store access" >&2
-    exit 2
+    prompt_override "system cookie store access" "${CMD:0:200}"
+    exit $?
   fi
 
   # --- GPG KEYS ---
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp|mv|tar|strings).*\.gnupg'; then
-    echo "BLOCKED: GPG keyring access" >&2
-    exit 2
+    prompt_override "GPG keyring access" "${CMD:0:200}"
+    exit $?
   fi
 
   # --- PERSONAL COMMUNICATIONS ---
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3|tar|zip).*Library/Messages'; then
-    echo "BLOCKED: iMessage/SMS history access" >&2
-    exit 2
+    prompt_override "iMessage/SMS history access" "${CMD:0:200}"
+    exit $?
   fi
 
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|cp|strings|sqlite3|tar|zip).*Library/Mail'; then
-    echo "BLOCKED: Apple Mail data access" >&2
-    exit 2
+    prompt_override "Apple Mail data access" "${CMD:0:200}"
+    exit $?
   fi
 
   # --- DEV AUTH TOKENS ---
-  # GitHub CLI (hosts.yml contains OAuth tokens)
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp).*\.config/gh/hosts'; then
-    echo "BLOCKED: GitHub CLI token access (hosts.yml)" >&2
-    exit 2
+    prompt_override "GitHub CLI token access" "${CMD:0:200}"
+    exit $?
   fi
 
-  # Docker credentials
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp).*\.docker/config\.json'; then
-    echo "BLOCKED: Docker credential access" >&2
-    exit 2
+    prompt_override "Docker credential access" "${CMD:0:200}"
+    exit $?
   fi
 
-  # Kubernetes config (cluster creds, certs)
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp).*\.kube/config'; then
-    echo "BLOCKED: Kubernetes credential access" >&2
-    exit 2
+    prompt_override "Kubernetes credential access" "${CMD:0:200}"
+    exit $?
   fi
 
-  # npm auth token
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|cp).*\.npmrc'; then
-    echo "BLOCKED: npm auth token access" >&2
-    exit 2
+    prompt_override "npm auth token access" "${CMD:0:200}"
+    exit $?
   fi
 
   # --- SYSTEM AUTH ---
   if echo "$CMD" | grep -qiE '(cat|head|tail|less|more|bat|vi|nano|sed).*(/etc/sudoers|/etc/pam\.d/)'; then
-    echo "BLOCKED: system auth config access" >&2
-    exit 2
+    prompt_override "system auth config access" "${CMD:0:200}"
+    exit $?
   fi
 
   exit 0
@@ -97,68 +143,62 @@ fi
 if [ "$TOOL" = "Read" ] || [ "$TOOL" = "Edit" ] || [ "$TOOL" = "Write" ]; then
   FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
-  # --- SSH KEYS (Read tool gap — Bash already blocked by block-dangerous-commands) ---
   if echo "$FILE_PATH" | grep -qiE '\.ssh/(id_|authorized_keys|known_hosts|config)'; then
-    echo "BLOCKED: cannot access SSH keys/config — $FILE_PATH" >&2
-    exit 2
+    prompt_override "SSH keys/config access" "$FILE_PATH"
+    exit $?
   fi
 
-  # --- GPG KEYS ---
   if echo "$FILE_PATH" | grep -qiE '\.gnupg/'; then
-    echo "BLOCKED: cannot access GPG keyring — $FILE_PATH" >&2
-    exit 2
+    prompt_override "GPG keyring access" "$FILE_PATH"
+    exit $?
   fi
 
-  # --- BROWSER CREDENTIAL STORES ---
   if echo "$FILE_PATH" | grep -qiE '(Google/Chrome|BraveSoftware|Microsoft Edge|Opera|Vivaldi).*(Login Data|Cookies|Web Data)'; then
-    echo "BLOCKED: cannot access browser credential store — $FILE_PATH" >&2
-    exit 2
+    prompt_override "browser credential store access" "$FILE_PATH"
+    exit $?
   fi
   if echo "$FILE_PATH" | grep -qiE 'Firefox/Profiles.*(key[0-9]\.db|logins\.json|cookies\.sqlite|cert[0-9]\.db)'; then
-    echo "BLOCKED: cannot access Firefox credentials — $FILE_PATH" >&2
-    exit 2
+    prompt_override "Firefox credentials access" "$FILE_PATH"
+    exit $?
   fi
   if echo "$FILE_PATH" | grep -qiE 'Library/Safari'; then
-    echo "BLOCKED: cannot access Safari data — $FILE_PATH" >&2
-    exit 2
+    prompt_override "Safari data access" "$FILE_PATH"
+    exit $?
   fi
   if echo "$FILE_PATH" | grep -qiE 'Library/Cookies'; then
-    echo "BLOCKED: cannot access system cookies — $FILE_PATH" >&2
-    exit 2
+    prompt_override "system cookies access" "$FILE_PATH"
+    exit $?
   fi
 
-  # --- PERSONAL COMMUNICATIONS ---
   if echo "$FILE_PATH" | grep -qiE 'Library/Messages'; then
-    echo "BLOCKED: cannot access iMessage/SMS data — $FILE_PATH" >&2
-    exit 2
+    prompt_override "iMessage/SMS data access" "$FILE_PATH"
+    exit $?
   fi
   if echo "$FILE_PATH" | grep -qiE 'Library/Mail'; then
-    echo "BLOCKED: cannot access Apple Mail data — $FILE_PATH" >&2
-    exit 2
+    prompt_override "Apple Mail data access" "$FILE_PATH"
+    exit $?
   fi
 
-  # --- DEV AUTH TOKENS ---
   if echo "$FILE_PATH" | grep -qiE '\.config/gh/hosts'; then
-    echo "BLOCKED: cannot access GitHub CLI tokens — $FILE_PATH" >&2
-    exit 2
+    prompt_override "GitHub CLI tokens access" "$FILE_PATH"
+    exit $?
   fi
   if echo "$FILE_PATH" | grep -qiE '\.docker/config\.json'; then
-    echo "BLOCKED: cannot access Docker credentials — $FILE_PATH" >&2
-    exit 2
+    prompt_override "Docker credentials access" "$FILE_PATH"
+    exit $?
   fi
   if echo "$FILE_PATH" | grep -qiE '\.kube/config'; then
-    echo "BLOCKED: cannot access Kubernetes credentials — $FILE_PATH" >&2
-    exit 2
+    prompt_override "Kubernetes credentials access" "$FILE_PATH"
+    exit $?
   fi
   if echo "$FILE_PATH" | grep -qiE '(^|/)\.npmrc$'; then
-    echo "BLOCKED: cannot access npm auth tokens — $FILE_PATH" >&2
-    exit 2
+    prompt_override "npm auth tokens access" "$FILE_PATH"
+    exit $?
   fi
 
-  # --- SYSTEM AUTH ---
   if echo "$FILE_PATH" | grep -qiE '^/etc/(sudoers|pam\.d/)'; then
-    echo "BLOCKED: cannot access system auth config — $FILE_PATH" >&2
-    exit 2
+    prompt_override "system auth config access" "$FILE_PATH"
+    exit $?
   fi
 
   exit 0
@@ -171,24 +211,24 @@ if [ "$TOOL" = "Glob" ]; then
   COMBINED="$PATTERN$GLOB_PATH"
 
   if echo "$COMBINED" | grep -qiE '\.ssh'; then
-    echo "BLOCKED: cannot scan SSH directory" >&2
-    exit 2
+    prompt_override "scanning SSH directory" "$COMBINED"
+    exit $?
   fi
   if echo "$COMBINED" | grep -qiE '\.gnupg'; then
-    echo "BLOCKED: cannot scan GPG directory" >&2
-    exit 2
+    prompt_override "scanning GPG directory" "$COMBINED"
+    exit $?
   fi
   if echo "$COMBINED" | grep -qiE '(Chrome|BraveSoftware|Microsoft.Edge|Firefox/Profiles|Library/Safari|Library/Cookies)'; then
-    echo "BLOCKED: cannot scan browser data directories" >&2
-    exit 2
+    prompt_override "scanning browser data directories" "$COMBINED"
+    exit $?
   fi
   if echo "$COMBINED" | grep -qiE 'Library/(Messages|Mail)'; then
-    echo "BLOCKED: cannot scan personal communications" >&2
-    exit 2
+    prompt_override "scanning personal communications" "$COMBINED"
+    exit $?
   fi
   if echo "$COMBINED" | grep -qiE '\.config/gh|\.docker|\.kube'; then
-    echo "BLOCKED: cannot scan dev auth directories" >&2
-    exit 2
+    prompt_override "scanning dev auth directories" "$COMBINED"
+    exit $?
   fi
 
   exit 0

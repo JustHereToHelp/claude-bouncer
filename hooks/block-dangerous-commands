@@ -1,9 +1,13 @@
 #!/bin/bash
-# PreToolUse hook: blocks truly dangerous command patterns
+# PreToolUse hook: catches dangerous command patterns
 # Exit 0 = allow, Exit 2 = block with message on stderr
 #
-# Catches: destructive ops, write+execute combos, data exfil,
-# privilege escalation, and credential access
+# Three tiers:
+#   HARD-BLOCK: Catastrophic/irreversible — no override possible
+#   PROMPT: Shows macOS dialog — user can Allow or Block
+#   ALLOW: No match — passes through
+#
+# Audit log: ~/.claude_bouncer/audit.log
 
 INPUT=$(cat)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
@@ -15,178 +19,255 @@ fi
 
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
+# --- LOGGING ---
+LOG_DIR="$HOME/.claude_bouncer"
+LOG_FILE="$LOG_DIR/audit.log"
+LOCK_FILE="$LOG_DIR/dialog.lock"
+mkdir -p "$LOG_DIR"
+
+log_event() {
+  local decision="$1" reason="$2"
+  local ts
+  ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
+  printf '[%s] %s tool=%s reason="%s" cmd="%s"\n' \
+    "$ts" "$decision" "$TOOL" "$reason" "${CMD:0:500}" >> "$LOG_FILE"
+}
+
+# --- SANITIZE for AppleScript ---
+# Escapes backslashes, double quotes, and newlines to prevent injection
+sanitize() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/}"
+  echo "$s"
+}
+
+# --- HARD BLOCK (no override) ---
+hard_block() {
+  local reason="$1"
+  log_event "HARD_BLOCKED" "$reason"
+  echo "HARD BLOCKED: $reason — no override available" >&2
+  exit 2
+}
+
+# --- PROMPT FUNCTION ---
+# Shows a macOS dialog. Uses mkdir lock to serialize concurrent dialogs.
+# Returns 0 if user clicks "Allow", 2 if "Block" or timeout.
+prompt_override() {
+  local reason="$1"
+  local reason_safe
+  reason_safe=$(sanitize "$reason")
+  local cmd_safe
+  cmd_safe=$(sanitize "${CMD:0:300}")
+
+  # mkdir is atomic on POSIX — works as a lock without flock
+  if ! mkdir "$LOCK_FILE" 2>/dev/null; then
+    echo "BLOCKED (dialog locked): $reason" >&2
+    log_event "BLOCKED_LOCKED" "$reason"
+    return 2
+  fi
+  trap 'rmdir "$LOCK_FILE" 2>/dev/null' EXIT
+
+  local result
+  result=$(osascript -e "
+    set theChoice to button returned of (display dialog \"⚠️ Claude Bouncer\" & return & return & \"Blocked: ${reason_safe}\" & return & return & \"Command:\" & return & \"${cmd_safe}\" buttons {\"Block\", \"Allow\"} default button \"Block\" with title \"Claude Bouncer\" with icon caution giving up after 120)
+    return theChoice
+  " 2>/dev/null)
+
+  rmdir "$LOCK_FILE" 2>/dev/null
+  trap - EXIT
+
+  if [ "$result" = "Allow" ]; then
+    log_event "ALLOWED" "$reason"
+    return 0
+  else
+    log_event "BLOCKED" "$reason"
+    echo "BLOCKED (user denied): $reason" >&2
+    return 2
+  fi
+}
+
+# ============================================================
+# TIER 1: HARD BLOCKS — catastrophic, irreversible, no override
+# ============================================================
+
+# Fork bombs
+if echo "$CMD" | grep -qE ':\(\)\{.*\|.*&'; then
+  hard_block "fork bomb pattern detected"
+fi
+
+# Disk-level destruction (dd to device, mkfs)
+if echo "$CMD" | grep -qE '>\s*/dev/sd|mkfs\.|dd\s+if=.*of=/dev'; then
+  hard_block "disk-level destructive operation"
+fi
+
+# Diskutil nuke
+if echo "$CMD" | grep -qE 'diskutil\s+(eraseDisk|eraseVolume|partitionDisk|appleRAID)'; then
+  hard_block "diskutil destructive operation"
+fi
+
+# Base64 decode piped to shell (evasion technique)
+if echo "$CMD" | grep -qE 'base64.*\|\s*(ba)?sh|base64.*\|\s*source'; then
+  hard_block "base64 decoded and piped to shell — evasion technique"
+fi
+
+# ============================================================
+# TIER 2: PROMPTED — user decides via dialog
+# ============================================================
+
 # --- DESTRUCTIVE OPERATIONS ---
 if echo "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--force|-[a-zA-Z]*f[a-zA-Z]*r)'; then
-  echo "BLOCKED: rm -rf / force-recursive delete detected" >&2
-  exit 2
+  prompt_override "rm -rf / force-recursive delete"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'rm\s+-r\s+-f\s|rm\s+-f\s+-r\s|rm\s+-r\s.*-f\s|rm\s+-f\s.*-r\s'; then
-  echo "BLOCKED: rm with split -r -f flags" >&2
-  exit 2
+  prompt_override "rm with split -r -f flags"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'xargs\s+rm\s'; then
-  echo "BLOCKED: piped rm via xargs" >&2
-  exit 2
+  prompt_override "piped rm via xargs"
+  exit $?
 fi
 
-if echo "$CMD" | grep -qE '>\s*/dev/sd|mkfs\.|dd\s+if=.*of=/dev'; then
-  echo "BLOCKED: disk-level destructive operation" >&2
-  exit 2
+if echo "$CMD" | grep -qE 'truncate\s'; then
+  prompt_override "truncate — can destroy file contents"
+  exit $?
 fi
 
 # --- PRIVILEGE ESCALATION ---
 if echo "$CMD" | grep -qE 'sudo\s'; then
-  echo "BLOCKED: sudo — privilege escalation not allowed" >&2
-  exit 2
+  prompt_override "sudo — privilege escalation"
+  exit $?
 fi
 
-# --- EXOTIC BYPASS PATTERNS ---
-if echo "$CMD" | grep -qE 'base64.*\|\s*(ba)?sh|base64.*\|\s*source'; then
-  echo "BLOCKED: base64 decoded and piped to shell — evasion technique" >&2
-  exit 2
-fi
-
+# --- INLINE EXECUTION ---
 if echo "$CMD" | grep -qE '(^|\s|&&|\||;)\s*(ba)?sh\s+-c\s'; then
-  echo "BLOCKED: bash -c / sh -c — use a script file instead" >&2
-  exit 2
+  prompt_override "bash -c / sh -c inline execution"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'python3?\s+-c\s.*\b(os\.system|subprocess|shutil\.rmtree|exec|eval)\b'; then
-  echo "BLOCKED: python -c with dangerous imports" >&2
-  exit 2
+  prompt_override "python -c with dangerous imports"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'find\s.*(-exec\s|-delete)'; then
-  echo "BLOCKED: find -exec/-delete — can execute or mass-delete" >&2
-  exit 2
+  prompt_override "find -exec/-delete — can execute or mass-delete"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'node\s+-e\s'; then
-  echo "BLOCKED: node -e — arbitrary JavaScript execution" >&2
-  exit 2
+  prompt_override "node -e — arbitrary JavaScript execution"
+  exit $?
 fi
 
 # --- GIT REMOTE / PUSH CONTROLS ---
 if echo "$CMD" | grep -qE 'git\s+remote\s+(add|set-url|rename|remove)\s'; then
-  echo "BLOCKED: modifying git remotes — potential data exfil vector" >&2
-  exit 2
+  prompt_override "modifying git remotes"
+  exit $?
 fi
 
 # --- WRITE + EXECUTE COMBOS ---
 if echo "$CMD" | grep -qE '(chmod\s+\+x|chmod\s+[0-7]*[1357][0-7]*).*&&.*(\.\/|bash|sh|python|node|ruby|perl)'; then
-  echo "BLOCKED: write+execute combo (chmod then run)" >&2
-  exit 2
+  prompt_override "write+execute combo (chmod then run)"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'curl.*\|\s*(ba)?sh|wget.*\|\s*(ba)?sh'; then
-  echo "BLOCKED: curl/wget pipe to shell — remote code execution" >&2
-  exit 2
+  prompt_override "curl/wget pipe to shell — remote code execution"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'curl.*-o.*&&.*(chmod|bash|sh|\./)'; then
-  echo "BLOCKED: download and execute pattern" >&2
-  exit 2
+  prompt_override "download and execute pattern"
+  exit $?
 fi
 
 # --- DATA EXFILTRATION ---
 if echo "$CMD" | grep -qE 'curl.*(-d|--data|--data-binary|-F|--form)\s'; then
-  echo "BLOCKED: curl POST/upload — potential data exfiltration" >&2
-  exit 2
+  prompt_override "curl POST/upload — potential data exfiltration"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'curl.*\.(env|pem|key|crt|p12|pfx|ssh)'; then
-  echo "BLOCKED: curl targeting sensitive file types" >&2
-  exit 2
+  prompt_override "curl targeting sensitive file types"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'nc\s+-|ncat\s|netcat\s'; then
-  echo "BLOCKED: netcat — potential data exfiltration" >&2
-  exit 2
+  prompt_override "netcat — potential data exfiltration"
+  exit $?
 fi
 
 # --- CREDENTIAL / KEY ACCESS ---
 if echo "$CMD" | grep -qE '(source|\.)\s+.*\.env'; then
-  echo "BLOCKED: sourcing .env file — credential exposure" >&2
-  exit 2
+  prompt_override "sourcing .env file — credential exposure"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE '(cat|head|tail|less|more|bat).*\.(env|pem|key|p12|pfx)'; then
-  echo "BLOCKED: reading sensitive credential files via Bash" >&2
-  exit 2
+  prompt_override "reading sensitive credential files via Bash"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE '(cat|head|tail|less|more|bat).*(\.ssh/|id_rsa|id_ed25519|authorized_keys)'; then
-  echo "BLOCKED: reading SSH keys/config" >&2
-  exit 2
+  prompt_override "reading SSH keys/config"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE '(cat|head|tail|less|more|bat).*(\.aws/credentials|\.netrc|\.npmrc.*auth)'; then
-  echo "BLOCKED: reading cloud/service credentials" >&2
-  exit 2
+  prompt_override "reading cloud/service credentials"
+  exit $?
 fi
 
 # --- macOS SPECIFIC: open command ---
 # NOTE: 'open' is NOT in the Bash auto-allow list, so it always prompts.
-# The CLAUDE.md rule also requires asking the user first.
 # Double protection = safe enough without a hard block.
 
 # --- SYSTEM MODIFICATION ---
 if echo "$CMD" | grep -qE 'launchctl\s+(load|submit|bootstrap)'; then
-  echo "BLOCKED: installing launch daemon/agent" >&2
-  exit 2
+  prompt_override "installing launch daemon/agent"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'crontab\s+-[er]'; then
-  echo "BLOCKED: modifying crontab" >&2
-  exit 2
+  prompt_override "modifying crontab"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'defaults\s+write'; then
-  echo "BLOCKED: modifying macOS system defaults" >&2
-  exit 2
+  prompt_override "modifying macOS system defaults"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'osascript'; then
-  echo "BLOCKED: osascript — AppleScript can execute arbitrary commands" >&2
-  exit 2
-fi
-
-if echo "$CMD" | grep -qE 'diskutil\s+(eraseDisk|eraseVolume|partitionDisk|appleRAID)'; then
-  echo "BLOCKED: diskutil destructive operation" >&2
-  exit 2
-fi
-
-if echo "$CMD" | grep -qE 'truncate\s'; then
-  echo "BLOCKED: truncate — can destroy file contents" >&2
-  exit 2
+  prompt_override "osascript — AppleScript execution"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'chmod\s+-R\s'; then
-  echo "BLOCKED: recursive chmod — can lock out entire directory trees" >&2
-  exit 2
-fi
-
-if echo "$CMD" | grep -qE ':\(\)\{.*\|.*&'; then
-  echo "BLOCKED: fork bomb pattern detected" >&2
-  exit 2
+  prompt_override "recursive chmod"
+  exit $?
 fi
 
 # --- GIT DESTRUCTIVE ---
 if echo "$CMD" | grep -qE 'git\s+push\s+.*--force|git\s+push\s+-f\s'; then
-  echo "BLOCKED: git force push" >&2
-  exit 2
+  prompt_override "git force push"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'git\s+reset\s+--hard'; then
-  echo "BLOCKED: git reset --hard — destructive" >&2
-  exit 2
+  prompt_override "git reset --hard — destructive"
+  exit $?
 fi
 
 if echo "$CMD" | grep -qE 'git\s+clean\s+-[a-zA-Z]*f'; then
-  echo "BLOCKED: git clean -f — removes untracked files permanently" >&2
-  exit 2
+  prompt_override "git clean -f — removes untracked files permanently"
+  exit $?
 fi
 
 # All clear
