@@ -10,6 +10,16 @@ v0.2 adds interactive macOS dialogs, session-scoped trust, a hard-block tier for
 
 ---
 
+## Wait, doesn't Claude Code already have permissions?
+
+Sort of. Claude Code has three modes — `bypassPermissions` (everything runs), `acceptEdits` (some stuff auto-runs, the rest prompts), and `default` (prompts for almost everything). But those controls are per-tool, not per-command. You can allow Bash or not allow Bash. You can't say "allow `git status` but block `git push --force`."
+
+The allowlists and deny rules in `settings.json` are supposed to help, but they've been [buggy](https://github.com/anthropics/claude-code/issues/6631) and are [fundamentally bypassable](https://www.joinformal.com/blog/allowlisting-some-bash-commands-is-often-the-same-as-allowlisting-all-with-claude-code/) when Claude also has write access.
+
+claude-bouncer sits underneath all of that. It's a hook that runs your own shell script on every tool use, and it checks the actual command against patterns you care about. Even if Claude's permission system says "go ahead," the bouncer can still step in. Three tiers — hard-block the catastrophic stuff, show you a dialog for the risky stuff, wave through the normal stuff.
+
+---
+
 ## Threat Model (Read This First)
 
 **What claude-bouncer IS:**
