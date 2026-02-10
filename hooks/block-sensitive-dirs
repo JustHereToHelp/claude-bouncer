@@ -14,7 +14,18 @@ TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
 LOG_DIR="$HOME/.claude_bouncer"
 LOG_FILE="$LOG_DIR/audit.log"
 LOCK_FILE="$LOG_DIR/dialog.lock"
-mkdir -p "$LOG_DIR"
+SESSION_DIR="$LOG_DIR/sessions"
+SESSION_FILE="$SESSION_DIR/$PPID.trusted"
+mkdir -p "$LOG_DIR" "$SESSION_DIR"
+
+# Clean up stale session files (parent PID no longer running)
+for f in "$SESSION_DIR"/*.trusted; do
+  [ -e "$f" ] || continue
+  pid=$(basename "$f" .trusted)
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$f"
+  fi
+done
 
 log_event() {
   local decision="$1" reason="$2" detail="$3"
@@ -37,6 +48,13 @@ sanitize() {
 # --- PROMPT FUNCTION ---
 prompt_override() {
   local reason="$1" detail="$2"
+
+  # Check session trust
+  if [ -f "$SESSION_FILE" ] && grep -qxF "$reason" "$SESSION_FILE"; then
+    log_event "SESSION_TRUSTED" "$reason" "$detail"
+    return 0
+  fi
+
   local reason_safe detail_safe
   reason_safe=$(sanitize "$reason")
   detail_safe=$(sanitize "${detail:0:300}")
@@ -50,15 +68,19 @@ prompt_override() {
 
   local result
   result=$(osascript -e "
-    set theChoice to button returned of (display dialog \"⚠️ Claude Bouncer\" & return & return & \"Blocked: ${reason_safe}\" & return & return & \"Detail:\" & return & \"${detail_safe}\" buttons {\"Block\", \"Allow\"} default button \"Block\" with title \"Claude Bouncer\" with icon caution giving up after 120)
+    set theChoice to button returned of (display dialog \"⚠️ Claude Bouncer\" & return & return & \"Blocked: ${reason_safe}\" & return & return & \"Detail:\" & return & \"${detail_safe}\" buttons {\"Block\", \"Allow Once\", \"Trust Session\"} default button \"Block\" with title \"Claude Bouncer\" with icon caution giving up after 120)
     return theChoice
   " 2>/dev/null)
 
   rmdir "$LOCK_FILE" 2>/dev/null
   trap - EXIT
 
-  if [ "$result" = "Allow" ]; then
-    log_event "ALLOWED" "$reason" "$detail"
+  if [ "$result" = "Trust Session" ]; then
+    echo "$reason" >> "$SESSION_FILE"
+    log_event "TRUSTED_SESSION" "$reason" "$detail"
+    return 0
+  elif [ "$result" = "Allow Once" ]; then
+    log_event "ALLOWED_ONCE" "$reason" "$detail"
     return 0
   else
     log_event "BLOCKED" "$reason" "$detail"

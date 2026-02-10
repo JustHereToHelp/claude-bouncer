@@ -23,7 +23,17 @@ CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 LOG_DIR="$HOME/.claude_bouncer"
 LOG_FILE="$LOG_DIR/audit.log"
 LOCK_FILE="$LOG_DIR/dialog.lock"
-mkdir -p "$LOG_DIR"
+SESSION_DIR="$LOG_DIR/sessions"
+SESSION_FILE="$SESSION_DIR/$PPID.trusted"
+mkdir -p "$LOG_DIR" "$SESSION_DIR"
+
+# Clean up stale session files (parent PID no longer running)
+for f in "$SESSION_DIR"/*.trusted; do
+  pid=$(basename "$f" .trusted)
+  if [ "$pid" != "*" ] && ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$f"
+  fi
+done
 
 log_event() {
   local decision="$1" reason="$2"
@@ -53,10 +63,18 @@ hard_block() {
 }
 
 # --- PROMPT FUNCTION ---
-# Shows a macOS dialog. Uses mkdir lock to serialize concurrent dialogs.
-# Returns 0 if user clicks "Allow", 2 if "Block" or timeout.
+# Three options: Block (default), Allow Once, Trust Session
+# Session trust is scoped to the parent process (Claude Code PID).
+# Returns 0 if allowed, 2 if blocked.
 prompt_override() {
   local reason="$1"
+
+  # Check if this pattern is already session-trusted
+  if [ -f "$SESSION_FILE" ] && grep -qxF "$reason" "$SESSION_FILE"; then
+    log_event "SESSION_TRUSTED" "$reason"
+    return 0
+  fi
+
   local reason_safe
   reason_safe=$(sanitize "$reason")
   local cmd_safe
@@ -72,15 +90,19 @@ prompt_override() {
 
   local result
   result=$(osascript -e "
-    set theChoice to button returned of (display dialog \"⚠️ Claude Bouncer\" & return & return & \"Blocked: ${reason_safe}\" & return & return & \"Command:\" & return & \"${cmd_safe}\" buttons {\"Block\", \"Allow\"} default button \"Block\" with title \"Claude Bouncer\" with icon caution giving up after 120)
+    set theChoice to button returned of (display dialog \"⚠️ Claude Bouncer\" & return & return & \"Blocked: ${reason_safe}\" & return & return & \"Command:\" & return & \"${cmd_safe}\" buttons {\"Block\", \"Allow Once\", \"Trust Session\"} default button \"Block\" with title \"Claude Bouncer\" with icon caution giving up after 120)
     return theChoice
   " 2>/dev/null)
 
   rmdir "$LOCK_FILE" 2>/dev/null
   trap - EXIT
 
-  if [ "$result" = "Allow" ]; then
-    log_event "ALLOWED" "$reason"
+  if [ "$result" = "Trust Session" ]; then
+    echo "$reason" >> "$SESSION_FILE"
+    log_event "TRUSTED_SESSION" "$reason"
+    return 0
+  elif [ "$result" = "Allow Once" ]; then
+    log_event "ALLOWED_ONCE" "$reason"
     return 0
   else
     log_event "BLOCKED" "$reason"
