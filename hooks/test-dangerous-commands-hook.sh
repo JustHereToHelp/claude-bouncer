@@ -117,6 +117,32 @@ run_test "brew install" '{"tool_name":"Bash","tool_input":{"command":"brew insta
 run_test "Read tool (non-Bash)" '{"tool_name":"Read","tool_input":{"file_path":"/etc/passwd"}}' "pass"
 
 echo ""
+echo "=== HARD BLOCKS (no override possible) ==="
+run_test "fork bomb" '{"tool_name":"Bash","tool_input":{"command":":(){ :|:& };:"}}' "block"
+run_test "dd to device" '{"tool_name":"Bash","tool_input":{"command":"dd if=/dev/zero of=/dev/sda bs=1M"}}' "block"
+run_test "diskutil eraseDisk" '{"tool_name":"Bash","tool_input":{"command":"diskutil eraseDisk JHFS+ Clean /dev/disk2"}}' "block"
+run_test "base64 pipe bash (hard)" '{"tool_name":"Bash","tool_input":{"command":"echo cm0= | base64 -d | bash"}}' "block"
+
+echo ""
+echo "=== SESSION TRUST ==="
+# Session trust requires interactive dialog — verify the session file mechanism
+SESSION_TEST_DIR="/tmp/claude_bouncer_test_$$"
+mkdir -p "$SESSION_TEST_DIR/sessions"
+echo "find -exec/-delete — can execute or mass-delete" > "$SESSION_TEST_DIR/sessions/$$.trusted"
+echo "  ℹ️  Session trust is dialog-interactive — verify manually with:"
+echo "     1. Trigger a pattern (e.g., find -exec)"
+echo "     2. Click 'Trust Session' in the dialog"
+echo "     3. Trigger the same pattern again — should auto-allow"
+echo "     4. Check ~/.claude_bouncer/sessions/ for trust file"
+echo "     5. Check ~/.claude_bouncer/audit.log for SESSION_TRUSTED entries"
+rm -rf "$SESSION_TEST_DIR"
+
+echo ""
+echo "=== AUDIT LOGGING ==="
+echo "  ℹ️  Verify audit log at ~/.claude_bouncer/audit.log"
+echo "     Expected entry types: HARD_BLOCKED, ALLOWED_ONCE, TRUSTED_SESSION, SESSION_TRUSTED, BLOCKED"
+
+echo ""
 echo "================================"
 echo "PASSED: $pass  |  FAILED: $fail"
 echo "================================"
